@@ -1,121 +1,127 @@
-# lambda-template
-A GitHub template for quickly starting a new AWS lambda project.
+# How to install and use the Boto3 macro in your AWS account
 
-## Naming
-Naming conventions:
-* for a vanilla Lambda: `lambda-<context>`
-* for a Cloudformation Transform macro: `cfn-macro-<context>`
-* for a Cloudformation Custom Resource: `cfn-cr-<context>`
+The `Boto3` macro adds the ability to create CloudFormation resources that represent operations performed by [boto3](http://boto3.readthedocs.io/). Each `Boto3` resource represents one function call.
 
-## Development
+A typical use case for this macro might be, for example, to provide some basic configuration of resources.
 
-### Contributions
-Contributions are welcome.
+## Deploying
 
-### Requirements
-Run `pipenv install --dev` to install both production and development
-requirements, and `pipenv shell` to activate the virtual environment. For more
-information see the [pipenv docs](https://pipenv.pypa.io/en/latest/).
+1. You will need an S3 bucket to store the CloudFormation artifacts:
+    * If you don't have one already, create one with `aws s3 mb s3://<bucket name>`
 
-After activating the virtual environment, run `pre-commit install` to install
-the [pre-commit](https://pre-commit.com/) git hook.
+2. Package the CloudFormation template. The provided template uses [the AWS Serverless Application Model](https://aws.amazon.com/about-aws/whats-new/2016/11/introducing-the-aws-serverless-application-model/) so must be transformed before you can deploy it.
 
-### Create a local build
+    ```shell
+    aws cloudformation package \
+        --template-file macro.template \
+        --s3-bucket <your bucket name here> \
+        --output-template-file packaged.template
+    ```
 
-```shell script
-$ sam build
-```
+3. Deploy the packaged CloudFormation template to a CloudFormation stack:
 
-### Run unit tests
-Tests are defined in the `tests` folder in this project. Use PIP to install the
-[pytest](https://docs.pytest.org/en/latest/) and run unit tests.
+    ```shell
+    aws cloudformation deploy \
+        --stack-name boto3-macro \
+        --template-file packaged.template \
+        --capabilities CAPABILITY_IAM
+    ```
 
-```shell script
-$ python -m pytest tests/ -v
-```
+4. To test out the macro's capabilities, try launching the provided example template:
 
-### Run integration tests
-Running integration tests
-[requires docker](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-cli-command-reference-sam-local-start-api.html)
+    ```shell
+    aws cloudformation deploy \
+        --stack-name boto3-macro-example \
+        --template-file example.template
+    ```
 
-```shell script
-$ sam local invoke HelloWorldFunction --event events/event.json
-```
+## Usage
 
-## Deployment
+To make use of the macro, add `Transform: Boto3` to the top level of your CloudFormation template.
 
-### Deploy Lambda to S3
-Deployments are sent to the
-[Sage cloudformation repository](https://bootstrap-awss3cloudformationbucket-19qromfd235z9.s3.amazonaws.com/index.html)
-which requires permissions to upload to Sage
-`bootstrap-awss3cloudformationbucket-19qromfd235z9` and
-`essentials-awss3lambdaartifactsbucket-x29ftznj6pqw` buckets.
-
-```shell script
-sam package --template-file .aws-sam/build/template.yaml \
-  --s3-bucket essentials-awss3lambdaartifactsbucket-x29ftznj6pqw \
-  --output-template-file .aws-sam/build/lambda-template.yaml
-
-aws s3 cp .aws-sam/build/lambda-template.yaml s3://bootstrap-awss3cloudformationbucket-19qromfd235z9/lambda-template/master/
-```
-
-## Publish Lambda
-
-### Private access
-Publishing the lambda makes it available in your AWS account.  It will be accessible in
-the [serverless application repository](https://console.aws.amazon.com/serverlessrepo).
-
-```shell script
-sam publish --template .aws-sam/build/lambda-template.yaml
-```
-
-### Public access
-Making the lambda publicly accessible makes it available in the
-[global AWS serverless application repository](https://serverlessrepo.aws.amazon.com/applications)
-
-```shell script
-aws serverlessrepo put-application-policy \
-  --application-id <lambda ARN> \
-  --statements Principals=*,Actions=Deploy
-```
-
-## Install Lambda into AWS
-
-### Sceptre
-Create the following [sceptre](https://github.com/Sceptre/sceptre) file
-config/prod/lambda-template.yaml
+Here is a trivial example template that adds a readme file to a new CodeCommit repository:
 
 ```yaml
-template_path: "remote/lambda-template.yaml"
-stack_name: "lambda-template"
-stack_tags:
-  Department: "Platform"
-  Project: "Infrastructure"
-  OwnerEmail: "it@sagebase.org"
-hooks:
-  before_launch:
-    - !cmd "curl https://bootstrap-awss3cloudformationbucket-19qromfd235z9.s3.amazonaws.com/lambda-template/master/lambda-template.yaml --create-dirs -o templates/remote/lambda-template.yaml"
+Transform: Boto3
+Resources:
+  Repo:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: my-repo
+
+  AddReadme:
+    Type: Boto3::CodeCommit.put_file
+    Mode: Create
+    Properties:
+      RepositoryName: !GetAtt Repo.Name
+      BranchName: master
+      FileContent: "Hello, world!"
+      FilePath: README.md
+      CommitMessage: Add a readme file
+      Name: CloudFormation
 ```
 
-Install the lambda using sceptre:
-```shell script
-sceptre --var "profile=my-profile" --var "region=us-east-1" launch prod/lambda-template.yaml
+## Features
+
+### Resource type
+
+The resource `Type` is used to identify a [boto3 client](https://boto3.amazonaws.com/v1/documentation/api/latest/guide/clients.html) and the method of that client to execute.
+
+The `Type` must start with `Boto3::` and be followed by the name of a client, a `.` and finally the name of a method.
+
+The client name will be converted to lower case so that you can use resource names that look similar to other CloudFormation resource types.
+
+Examples:
+* `Boto3::CodeCommit.put_file`
+* `Boto3::IAM.put_user_permissions_boundary`
+* `Boto3::EC2.create_snapshot`
+
+### Resource mode
+
+The resource may contain a `Mode` property which specifies whether the boto3 call should be made on `Create`, `Update`, `Delete` or any combination of those.
+
+The `Mode` may either be a string or a list of strings. For example:
+
+* `Mode: Create`
+* `Mode: Delete`
+* `Mode: [Create, Update]`
+
+### Resource properties
+
+The `Properties` of the resource will be passed to the specified boto3 method as arguments. The name of each property will be modified so that it started with a lower-case character so that you can use property names that look similar to other CloudFormation resource properties.
+
+### Controlling the order of execution
+
+You can use the standard CloudFormation property `DependsOn` when you need to ensure that your `Boto3` resources are executed in the correct order.
+
+## Examples
+
+
+The following resource:
+
+```yaml
+ChangeBinaryTypes:
+  Type: Boto3::CloudFormation.execute_change_set
+  Mode: [Create, Update]
+  Properties:
+    ChangeSetName: !Ref ChangeSet
+    StackName: !Ref Stack
 ```
 
-### AWS Console
-Steps to deploy from AWS console.
+will result in running the equivalent of the following:
 
-1. Login to AWS
-2. Access the
-[serverless application repository](https://console.aws.amazon.com/serverlessrepo)
--> Available Applications
-3. Select application to install
-4. Enter Application settings
-5. Click Deploy
+```python
+boto3.client("cloudformation").execute_change_set(changeSetName=<value of ChangeSet>, stackName=<value of StackName>)
+```
 
-## Releasing
+when the stack is created or updated.
 
-We have setup our CI to automate a releases.  To kick off the process just create
-a tag (i.e 0.0.1) and push to the repo.  The tag must be the same number as the current
-version in [template.yaml](template.yaml).  Our CI will do the work of deploying and publishing
-the lambda.
+## Author
+
+[Steve Engledow](https://linkedin.com/in/stilvoid)  
+Senior Solutions Builder  
+Amazon Web Services
+
+## Acknowledgments
+
+The code for this macro is from [Boto3 macro in AWS Labs](https://raw.githubusercontent.com/awslabs/aws-cloudformation-templates/master/aws/services/CloudFormation/MacrosExamples/Boto3)
